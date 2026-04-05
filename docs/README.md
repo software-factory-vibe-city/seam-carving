@@ -46,6 +46,8 @@ cargo run -- --input input.jpg --output output.jpg --width 800 --height 600
 
 This project supports running in the browser via WebAssembly, allowing for fast, client-side image resizing without uploading data to a server.
 
+**Live Demo**: [https://software-factory-vibe-city.github.io/seam-carving/](https://software-factory-vibe-city.github.io/seam-carving/)
+
 ### 🌐 Browser Version Note
 The browser version is provided for demonstration and accessibility. Please note:
 - **Performance**: The Wasm version is slower than the native CLI implementation due to the "Marshalling Tax" (data copying between JavaScript and Wasm) and the current limitations of multi-threading in the browser.
@@ -65,16 +67,16 @@ To compile the project to Wasm, you will need `wasm-pack` installed.
    wasm-pack build --target web
    ```
 
-This will generate a `pkg/` directory containing the compiled `.wasm` binary and the JavaScript glue code.
+This will generate a `docs/pkg/` directory containing the compiled `.wasm` binary and the JavaScript glue code.
 
 ### Integration
 
 The Wasm module provides `resize_width_wasm` and `resize_height_wasm` functions. These functions accept raw byte arrays and a JavaScript callback function to track progress in real-time.
 
-An example implementation is provided in `index.html`. To run it:
+An example implementation is provided in `docs/index.html`. To run it:
 1. Build the Wasm package as shown above.
 2. Serve the project directory using a local web server (e.g., `python3 -m http.server` or `live-server`).
-3. Open `index.html` in your browser.
+3. Open `docs/index.html` in your browser.
 
 ## Dependencies
 

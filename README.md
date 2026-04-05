@@ -29,6 +29,34 @@ You can use the compiled binary to resize images. Run the following command:
 cargo run -- --input input.jpg --output output.jpg --width 800 --height 600
 ```
 
+## Examples & Comparison
+
+The following examples demonstrate the effectiveness of the hybrid energy model in preserving structural integrity during content-aware resizing.
+
+### Balloons
+**Goal**: Remove background while preserving circular shapes.
+- **Input**: <img src="images/in/baloons.png" width="400"> $\rightarrow$ **Outputs**: <img src="images/out/baloons-w-75.jpg" width="300"> (750px), <img src="images/out/baloons-w-50.jpg" width="200"> (500px)
+- **Effect**: The algorithm intelligently identifies the flat blue areas as low-energy and removes them, while the structural energy of the balloons prevents distortion or "squishing" across different reduction levels.
+
+### Cityscape
+**Goal**: Reduce width while maintaining vertical architectural lines.
+- **Input**: <img src="images/in/city.jpg" width="400"> $\rightarrow$ **Output**: <img src="images/out/city-w-50.jpg" width="200">
+- **Effect**: Vertical edges of buildings are preserved as high-energy regions, ensuring the city's perspective remains intact while the width is reduced by removing gaps between structures.
+
+### Comparison Summary
+
+| Image | Challenge | Result |
+| :--- | :--- | :--- |
+| **Balloons** | Circular preservation | Distortion-free reduction of background |
+| **Cityscape** | Vertical structural integrity | Perspective-preserving width reduction |
+
+### Limitations
+
+Seam carving is highly effective when low-energy "empty" space exists. However, in images where every pixel is part of a significant structural edge (high energy across the entire image), the algorithm is forced to remove higher-energy seams.
+
+- **Extreme Reduction**: <img src="images/out/city-w-50-h-20.jpg" width="400">
+  - **Result**: When the reduction target is too aggressive and no true low-energy seams remain, the algorithm begins removing essential structural pixels, leading to visible "squishing" and distortion.
+
 ### Arguments
 
 - `-i, --input <path>`: Path to the input image.
