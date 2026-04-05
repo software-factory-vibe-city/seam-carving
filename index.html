@@ -114,16 +114,8 @@
                         };
                     };
 
-                    // IMPORTANT: Convert RGBA (Canvas) to RGB (Wasm expectation)
-                    const rgba = originalImgData;
-                    const rgb = new Uint8Array(originalWidth * originalHeight * 3);
-                    for (let i = 0; i < originalWidth * originalHeight; i++) {
-                        rgb[i * 3] = rgba[i * 4];     // R
-                        rgb[i * 3 + 1] = rgba[i * 4 + 1]; // G
-                        rgb[i * 3 + 2] = rgba[i * 4 + 2]; // B
-                    }
-
-                    let currentData = rgb;
+                    // Use RGBA directly (no conversion needed)
+                    let currentData = originalImgData;
                     let currentW = originalWidth;
                     let currentH = originalHeight;
 
@@ -157,47 +149,17 @@
                         currentH = th;
                     }
 
-                    if (tw >= currentW && th >= currentH) {
-                        currentData = rgb;
+                    // Fix: If nothing was resized, ensure we are using the correct original dimensions
+                    if (tw >= originalWidth && th >= originalHeight) {
+                        currentData = originalImgData;
+                        currentW = originalWidth;
+                        currentH = originalHeight;
                     }
 
-                    // Convert RGB back to RGBA for Canvas
-                    console.log(`Final buffer size: ${currentData.length}, Expected: ${currentW * currentH * 3}`);
-                    const finalData = new Uint8ClampedArray(currentW * currentH * 4);
-                    
-                    // Calculate the actual stride if there is excess capacity
-                    // We assume the image is correct but padded at the end of each row,
-                    // OR the buffer is just larger than expected.
-                    // If the buffer is exactly currentW * currentH * 3, we use standard indexing.
-                    // If it's larger, we have to decide if it's row-padding or just trailing garbage.
-                    
-                    const expectedSize = currentW * currentH * 3;
-                    const actualSize = currentData.length;
-                    
-                    for (let i = 0; i < currentW * currentH; i++) {
-                        const x = i % currentW;
-                        const y = Math.floor(i / currentW);
-                        
-                        // If actualSize > expectedSize, check if the gap is per-row (stride)
-                        // or just at the end. 
-                        // Most Wasm/Rust Vecs don't add per-row padding unless specifically requested.
-                        // However, let's check if the total size is a multiple of height.
-                        let rgbIdx;
-                        if (actualSize > expectedSize && actualSize % currentH === 0) {
-                            const stride = actualSize / currentH;
-                            rgbIdx = y * stride + x * 3;
-                        } else {
-                            rgbIdx = i * 3;
-                        }
-
-                        const rgbaIdx = i * 4;
-                        if (rgbIdx + 2 < actualSize) {
-                            finalData[rgbaIdx]     = currentData[rgbIdx];     // R
-                            finalData[rgbaIdx + 1] = currentData[rgbIdx + 1]; // G
-                            finalData[rgbaIdx + 2] = currentData[rgbIdx + 2]; // B
-                            finalData[rgbaIdx + 3] = 255;                  // A
-                        }
-                    }
+                    // Direct Buffer Access: Wasm now returns RGBA directly
+                    // Explicitly slice the buffer to the exact size expected by ImageData
+                    const expectedSize = currentW * currentH * 4;
+                    const finalData = new Uint8ClampedArray(currentData.slice(0, expectedSize));
 
                     resizedCanvas.width = currentW;
                     resizedCanvas.height = currentH;

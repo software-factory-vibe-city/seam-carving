@@ -12,7 +12,8 @@ pub fn resize_width(img: &mut DynamicImage, target_width: u32, progress_cb: Opti
         return Ok(());
     }
 
-    let mut rgb_data = img.to_rgb8().into_raw();
+    // Use RGBA to match browser's native format
+    let mut rgba_data = img.to_rgba8().into_raw();
     let mut gray_data = img.to_luma8().into_raw();
     
     let mut current_w = width as usize;
@@ -26,8 +27,8 @@ pub fn resize_width(img: &mut DynamicImage, target_width: u32, progress_cb: Opti
     while current_w > target_width as usize {
         let seam = find_vertical_seam_optimized(&energy, current_w, h);
         
-        // In-place removal in RGB and Gray buffers
-        remove_seam_in_place(&mut rgb_data, &seam, current_w, h, 3);
+        // In-place removal in RGBA and Gray buffers
+        remove_seam_in_place(&mut rgba_data, &seam, current_w, h, 4);
         remove_seam_in_place(&mut gray_data, &seam, current_w, h, 1);
         
         // Update energy for the affected columns
@@ -40,11 +41,10 @@ pub fn resize_width(img: &mut DynamicImage, target_width: u32, progress_cb: Opti
         }
     }
     
-    // Ensure the buffer is exactly the size needed for the target dimensions
     // Use a new Vec with exact size to avoid any capacity issues in Wasm
-    let final_rgb_data = rgb_data.clone();
-    let final_img = RgbImage::from_raw(target_width, height, final_rgb_data).ok_or("Failed to reconstruct RGB image")?;
-    *img = DynamicImage::ImageRgb8(final_img);
+    let final_rgba_data = rgba_data;
+    let final_img = image::RgbaImage::from_raw(target_width, height, final_rgba_data).ok_or("Failed to reconstruct RGBA image")?;
+    *img = DynamicImage::ImageRgba8(final_img);
     Ok(())
 }
 
@@ -78,15 +78,18 @@ fn get_sobel_x(gray: &[u8], x: usize, y: usize, w: usize, h: usize) -> f32 {
         gray[cy * w + cx] as f32
     };
 
-    -1.0 * get_px(x as isize - 1, y as isize - 1)
-    + 0.0 * get_px(x as isize, y as isize - 1)
-    + 1.0 * get_px(x as isize + 1, y as isize - 1)
-    - 2.0 * get_px(x as isize - 1, y as isize)
-    + 0.0 * get_px(x as isize, y as isize)
-    + 2.0 * get_px(x as isize + 1, y as isize)
-    - 1.0 * get_px(x as isize - 1, y as isize + 1)
-    + 0.0 * get_px(x as isize, y as isize + 1)
-    + 1.0 * get_px(x as isize + 1, y as isize + 1)
+    // Unrolled Sobel X:
+    // -1 0 1
+    // -2 0 2
+    // -1 0 1
+    let p00 = get_px(x as isize - 1, y as isize - 1);
+    let p01 = get_px(x as isize + 1, y as isize - 1);
+    let p10 = get_px(x as isize - 1, y as isize);
+    let p11 = get_px(x as isize + 1, y as isize);
+    let p20 = get_px(x as isize - 1, y as isize + 1);
+    let p21 = get_px(x as isize + 1, y as isize + 1);
+
+    -p00 + p01 - 2.0 * p10 + 2.0 * p11 - p20 + p21
 }
 
 fn get_sobel_y(gray: &[u8], x: usize, y: usize, w: usize, h: usize) -> f32 {
@@ -96,50 +99,53 @@ fn get_sobel_y(gray: &[u8], x: usize, y: usize, w: usize, h: usize) -> f32 {
         gray[cy * w + cx] as f32
     };
 
-    -1.0 * get_px(x as isize - 1, y as isize - 1)
-    - 2.0 * get_px(x as isize, y as isize - 1)
-    - 1.0 * get_px(x as isize + 1, y as isize - 1)
-    + 0.0 * get_px(x as isize - 1, y as isize)
-    + 0.0 * get_px(x as isize, y as isize)
-    + 0.0 * get_px(x as isize + 1, y as isize)
-    + 1.0 * get_px(x as isize - 1, y as isize + 1)
-    + 2.0 * get_px(x as isize, y as isize + 1)
-    + 1.0 * get_px(x as isize + 1, y as isize + 1)
+    // Unrolled Sobel Y:
+    // -1 -2 -1
+    //  0  0  0
+    //  1  2  1
+    let p00 = get_px(x as isize - 1, y as isize - 1);
+    let p01 = get_px(x as isize, y as isize - 1);
+    let p02 = get_px(x as isize + 1, y as isize - 1);
+    let p20 = get_px(x as isize - 1, y as isize + 1);
+    let p21 = get_px(x as isize, y as isize + 1);
+    let p22 = get_px(x as isize + 1, y as isize + 1);
+
+    -p00 - 2.0 * p01 - p02 + p20 + 2.0 * p21 + p22
 }
 
 fn find_vertical_seam_optimized(energy: &[f32], w: usize, h: usize) -> Vec<usize> {
-    let mut dp = vec![0.0; w];
+    let mut dp_prev = vec![0.0; w];
+    let mut dp_curr = vec![0.0; w];
     let mut pointers = vec![0; w * h];
 
     for x in 0..w {
-        dp[x] = energy[x];
+        dp_prev[x] = energy[x];
     }
 
     for y in 1..h {
         let row_offset = y * w;
-        let mut next_dp = vec![0.0; w];
         
         for x in 0..w {
-            let left = if x > 0 { dp[x - 1] } else { f32::MAX };
-            let mid = dp[x];
-            let right = if x < w - 1 { dp[x + 1] } else { f32::MAX };
+            let left = if x > 0 { dp_prev[x - 1] } else { f32::MAX };
+            let mid = dp_prev[x];
+            let right = if x < w - 1 { dp_prev[x + 1] } else { f32::MAX };
             
             let min_prev = left.min(mid).min(right);
-            next_dp[x] = energy[row_offset + x] + min_prev;
+            dp_curr[x] = energy[row_offset + x] + min_prev;
             
             pointers[row_offset + x] = if min_prev == left { x - 1 }
                                   else if min_prev == mid { x }
                                   else { x + 1 };
         }
-        dp = next_dp;
+        std::mem::swap(&mut dp_prev, &mut dp_curr);
     }
 
     let mut seam = vec![0; h];
     let mut min_x = 0;
-    let mut min_val = dp[0];
+    let mut min_val = dp_prev[0];
     for x in 1..w {
-        if dp[x] < min_val {
-            min_val = dp[x];
+        if dp_prev[x] < min_val {
+            min_val = dp_prev[x];
             min_x = x;
         }
     }
@@ -221,7 +227,7 @@ mod tests {
     fn test_resize_width() {
         let mut img = create_test_image(100, 100);
         let target_width = 50;
-        resize_width(&mut img, target_width).unwrap();
+        resize_width(&mut img, target_width, None).unwrap();
         assert_eq!(img.width(), target_width);
         assert_eq!(img.height(), 100);
     }
@@ -230,7 +236,7 @@ mod tests {
     fn test_resize_height() {
         let mut img = create_test_image(100, 100);
         let target_height = 50;
-        resize_height(&mut img, target_height).unwrap();
+        resize_height(&mut img, target_height, None).unwrap();
         assert_eq!(img.width(), 100);
         assert_eq!(img.height(), 50);
     }
@@ -238,8 +244,8 @@ mod tests {
     #[test]
     fn test_resize_both() {
         let mut img = create_test_image(100, 100);
-        resize_width(&mut img, 60).unwrap();
-        resize_height(&mut img, 40).unwrap();
+        resize_width(&mut img, 60, None).unwrap();
+        resize_height(&mut img, 40, None).unwrap();
         assert_eq!(img.width(), 60);
         assert_eq!(img.height(), 40);
     }
@@ -247,8 +253,8 @@ mod tests {
     #[test]
     fn test_resize_no_change() {
         let mut img = create_test_image(100, 100);
-        resize_width(&mut img, 100).unwrap();
-        resize_height(&mut img, 100).unwrap();
+        resize_width(&mut img, 100, None).unwrap();
+        resize_height(&mut img, 100, None).unwrap();
         assert_eq!(img.width(), 100);
         assert_eq!(img.height(), 100);
     }
@@ -256,11 +262,11 @@ mod tests {
     #[test]
     fn test_resize_to_one_pixel() {
         let mut img = create_test_image(10, 10);
-        resize_width(&mut img, 1).unwrap();
+        resize_width(&mut img, 1, None).unwrap();
         assert_eq!(img.width(), 1);
         assert_eq!(img.height(), 10);
         
-        resize_height(&mut img, 1).unwrap();
+        resize_height(&mut img, 1, None).unwrap();
         assert_eq!(img.width(), 1);
         assert_eq!(img.height(), 1);
     }
@@ -268,7 +274,7 @@ mod tests {
     #[test]
     fn test_resize_empty_image() {
         let mut img = create_test_image(1, 1);
-        let res = resize_width(&mut img, 1);
+        let res = resize_width(&mut img, 1, None);
         assert!(res.is_ok());
         assert_eq!(img.width(), 1);
     }
@@ -276,7 +282,7 @@ mod tests {
     #[test]
     fn test_resize_too_large() {
         let mut img = create_test_image(10, 10);
-        let res = resize_width(&mut img, 20);
+        let res = resize_width(&mut img, 20, None);
         assert!(res.is_err());
     }
 }
