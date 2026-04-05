@@ -65,16 +65,16 @@ To compile the project to Wasm, you will need `wasm-pack` installed.
    wasm-pack build --target web
    ```
 
-This will generate a `pkg/` directory containing the compiled `.wasm` binary and the JavaScript glue code.
+This will generate a `docs/pkg/` directory containing the compiled `.wasm` binary and the JavaScript glue code.
 
 ### Integration
 
 The Wasm module provides `resize_width_wasm` and `resize_height_wasm` functions. These functions accept raw byte arrays and a JavaScript callback function to track progress in real-time.
 
-An example implementation is provided in `index.html`. To run it:
+An example implementation is provided in `docs/index.html`. To run it:
 1. Build the Wasm package as shown above.
 2. Serve the project directory using a local web server (e.g., `python3 -m http.server` or `live-server`).
-3. Open `index.html` in your browser.
+3. Open `docs/index.html` in your browser.
 
 ## Dependencies
 
