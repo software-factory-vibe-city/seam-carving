@@ -46,6 +46,8 @@ cargo run -- --input input.jpg --output output.jpg --width 800 --height 600
 
 This project supports running in the browser via WebAssembly, allowing for fast, client-side image resizing without uploading data to a server.
 
+**Live Demo**: [https://software-factory-vibe-city.github.io/seam-carving/](https://software-factory-vibe-city.github.io/seam-carving/)
+
 ### 🌐 Browser Version Note
 The browser version is provided for demonstration and accessibility. Please note:
 - **Performance**: The Wasm version is slower than the native CLI implementation due to the "Marshalling Tax" (data copying between JavaScript and Wasm) and the current limitations of multi-threading in the browser.
