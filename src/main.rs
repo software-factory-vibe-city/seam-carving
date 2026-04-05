@@ -36,8 +36,11 @@ fn main() {
     if let Some(w) = args.width {
         if w < img.width() {
             println!("Resizing width from {} to {}...", img.width(), w);
-            if let Err(e) = resize_width(&mut img, w) {
-                eprintln!("Error resizing width: {}", e);
+            if let Err(e) = resize_width(&mut img, w, Some(&|p| {
+                print!("\rProgress: {:.1}%", p * 100.0);
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            })) {
+                eprintln!("\nError resizing width: {}", e);
                 std::process::exit(1);
             }
         } else {
@@ -48,8 +51,11 @@ fn main() {
     if let Some(h) = args.height {
         if h < img.height() {
             println!("Resizing height from {} to {}...", img.height(), h);
-            if let Err(e) = resize_height(&mut img, h) {
-                eprintln!("Error resizing height: {}", e);
+            if let Err(e) = resize_height(&mut img, h, Some(&|p| {
+                print!("\rProgress: {:.1}%", p * 100.0);
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            })) {
+                eprintln!("\nError resizing height: {}", e);
                 std::process::exit(1);
             }
         } else {

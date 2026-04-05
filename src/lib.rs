@@ -1,374 +1,207 @@
-use image::{DynamicImage, RgbImage, GrayImage};
+use image::{DynamicImage, RgbImage, GenericImageView};
+use rayon::prelude::*;
 
-/// Resizes the width of an image using the seam carving algorithm.
-///
-/// This function iteratively identifies and removes the vertical seam with the lowest
-/// energy (lowest visual importance) until the target width is reached.
-///
-/// # Arguments
-/// * `img` - A mutable reference to the `DynamicImage` to be resized.
-/// * `target_width` - The desired width of the output image.
-pub fn resize_width(img: &mut DynamicImage, target_width: u32) -> Result<(), String> {
-    if target_width > img.width() {
-        return Err(format!("Target width {} is greater than current width {}", target_width, img.width()));
+pub mod wasm;
+
+pub fn resize_width(img: &mut DynamicImage, target_width: u32, progress_cb: Option<&dyn Fn(f32)>) -> Result<(), String> {
+    let (width, height) = img.dimensions();
+    if target_width > width {
+        return Err(format!("Target width {} is greater than current width {}", target_width, width));
     }
-    let mut current_img = img.to_rgb8();
-    let mut gray = DynamicImage::ImageRgb8(current_img.clone()).into_luma8();
-    let mut width = current_img.width();
-    let height = current_img.height();
-    let mut energy = calculate_energy_floats(&current_img, &gray);
+    if target_width == width {
+        return Ok(());
+    }
+
+    let mut rgb_data = img.to_rgb8().into_raw();
+    let mut gray_data = img.to_luma8().into_raw();
     
-    while current_img.width() > target_width {
-        let seam = find_vertical_seam_with_energy(&energy, width, height);
-        current_img = remove_vertical_seam(&current_img, &seam);
-        gray = remove_vertical_seam_gray(&gray, &seam);
-        update_energy_after_vertical_seam(&mut energy, &gray, &seam, &mut width);
+    let mut current_w = width as usize;
+    let h = height as usize;
+    
+    let mut energy = calculate_energy_sobel_parallel(&gray_data, current_w, h);
+    
+    let total_seams = width - target_width;
+    let mut seams_removed = 0;
+
+    while current_w > target_width as usize {
+        let seam = find_vertical_seam_optimized(&energy, current_w, h);
         
-        if current_img.width() % 10 == 0 || current_img.width() == target_width {
-            // Progress logging removed for performance/cleanliness
+        // In-place removal in RGB and Gray buffers
+        remove_seam_in_place(&mut rgb_data, &seam, current_w, h, 3);
+        remove_seam_in_place(&mut gray_data, &seam, current_w, h, 1);
+        
+        // Update energy for the affected columns
+        update_energy_after_seam(&mut energy, &gray_data, &seam, current_w - 1, h);
+        
+        current_w -= 1;
+        seams_removed += 1;
+        if let Some(cb) = progress_cb {
+            cb(seams_removed as f32 / total_seams as f32);
         }
     }
-    *img = DynamicImage::ImageRgb8(current_img);
+    
+    // Ensure the buffer is exactly the size needed for the target dimensions
+    // Use a new Vec with exact size to avoid any capacity issues in Wasm
+    let final_rgb_data = rgb_data.clone();
+    let final_img = RgbImage::from_raw(target_width, height, final_rgb_data).ok_or("Failed to reconstruct RGB image")?;
+    *img = DynamicImage::ImageRgb8(final_img);
     Ok(())
 }
 
 /// Resizes the height of an image using the seam carving algorithm.
-///
-/// This function iteratively identifies and removes the horizontal seam with the lowest
-/// energy (lowest visual importance) until the target height is reached.
-///
-/// # Arguments
-/// * `img` - A mutable reference to the `DynamicImage` to be resized.
-/// * `target_height` - The desired height of the output image.
-pub fn resize_height(img: &mut DynamicImage, target_height: u32) -> Result<(), String> {
+pub fn resize_height(img: &mut DynamicImage, target_height: u32, progress_cb: Option<&dyn Fn(f32)>) -> Result<(), String> {
     if target_height > img.height() {
         return Err(format!("Target height {} is greater than current height {}", target_height, img.height()));
     }
-    let mut current_img = img.to_rgb8();
-    let mut gray = DynamicImage::ImageRgb8(current_img.clone()).into_luma8();
-    let mut height = current_img.height();
-    let width = current_img.width();
-    let mut energy = calculate_energy_floats_horizontal(&current_img, &gray);
-
-    while current_img.height() > target_height {
-        let seam = find_horizontal_seam_with_energy(&energy, width, height);
-        current_img = remove_horizontal_seam(&current_img, &seam);
-        gray = remove_horizontal_seam_gray(&gray, &seam);
-        update_energy_after_horizontal_seam(&mut energy, &gray, &seam, &mut height);
-
-        if current_img.height() % 10 == 0 || current_img.height() == target_height {
-            // Progress logging removed for performance/cleanliness
-        }
-    }
-    *img = DynamicImage::ImageRgb8(current_img);
+    
+    *img = img.rotate90();
+    resize_width(img, target_height, progress_cb)?;
+    *img = img.rotate270();
+    
     Ok(())
 }
 
-
-fn calculate_pixel_energy(gray: &GrayImage, x: u32, y: u32) -> f32 {
-    let (width, height) = gray.dimensions();
-    let dx = if x > 0 && x < width - 1 {
-        let left = gray.get_pixel(x - 1, y).0[0];
-        let right = gray.get_pixel(x + 1, y).0[0];
-        (left as f32 - right as f32).abs()
-    } else if x == 0 && width > 1 {
-        let right = gray.get_pixel(x + 1, y).0[0];
-        let center = gray.get_pixel(x, y).0[0];
-        (center as f32 - right as f32).abs()
-    } else if x == width - 1 && width > 1 {
-        let left = gray.get_pixel(x - 1, y).0[0];
-        let center = gray.get_pixel(x, y).0[0];
-        (center as f32 - left as f32).abs()
-    } else {
-        0.0
-    };
-    let dy = if y > 0 && y < height - 1 {
-        let top = gray.get_pixel(x, y - 1).0[0];
-        let bottom = gray.get_pixel(x, y + 1).0[0];
-        (top as f32 - bottom as f32).abs()
-    } else if y == 0 && height > 1 {
-        let bottom = gray.get_pixel(x, y + 1).0[0];
-        let center = gray.get_pixel(x, y).0[0];
-        (center as f32 - bottom as f32).abs()
-    } else if y == height - 1 && height > 1 {
-        let top = gray.get_pixel(x, y - 1).0[0];
-        let center = gray.get_pixel(x, y).0[0];
-        (center as f32 - top as f32).abs()
-    } else {
-        0.0
-    };
-    (dx * dx + dy * dy).sqrt()
+fn calculate_energy_sobel_parallel(gray: &[u8], w: usize, h: usize) -> Vec<f32> {
+    (0..h).into_par_iter().flat_map(|y| {
+        (0..w).map(move |x| {
+            let gx = get_sobel_x(gray, x, y, w, h);
+            let gy = get_sobel_y(gray, x, y, w, h);
+            (gx * gx + gy * gy).sqrt()
+        }).collect::<Vec<_>>()
+    }).collect()
 }
 
-fn calculate_energy_floats(img: &RgbImage, gray: &GrayImage) -> Vec<f32> {
-    let (width, height) = img.dimensions();
-    let mut energy = vec![0.0; (width * height) as usize];
-    
-    for y in 0..height {
-        let y_u32 = y;
-        for x in 0..width {
-            energy[(y * width + x) as usize] = calculate_pixel_energy(gray, x, y_u32);
-        }
-    }
-    energy
+fn get_sobel_x(gray: &[u8], x: usize, y: usize, w: usize, h: usize) -> f32 {
+    let get_px = |nx: isize, ny: isize| {
+        let cx = nx.clamp(0, (w - 1) as isize) as usize;
+        let cy = ny.clamp(0, (h - 1) as isize) as usize;
+        gray[cy * w + cx] as f32
+    };
+
+    -1.0 * get_px(x as isize - 1, y as isize - 1)
+    + 0.0 * get_px(x as isize, y as isize - 1)
+    + 1.0 * get_px(x as isize + 1, y as isize - 1)
+    - 2.0 * get_px(x as isize - 1, y as isize)
+    + 0.0 * get_px(x as isize, y as isize)
+    + 2.0 * get_px(x as isize + 1, y as isize)
+    - 1.0 * get_px(x as isize - 1, y as isize + 1)
+    + 0.0 * get_px(x as isize, y as isize + 1)
+    + 1.0 * get_px(x as isize + 1, y as isize + 1)
 }
 
-fn find_vertical_seam_with_energy(energy: &[f32], width: u32, height: u32) -> Vec<usize> {
-    if width == 0 { return vec![]; }
-    let w = width as usize;
-    let h = height as usize;
+fn get_sobel_y(gray: &[u8], x: usize, y: usize, w: usize, h: usize) -> f32 {
+    let get_px = |nx: isize, ny: isize| {
+        let cx = nx.clamp(0, (w - 1) as isize) as usize;
+        let cy = ny.clamp(0, (h - 1) as isize) as usize;
+        gray[cy * w + cx] as f32
+    };
 
-    let mut dp = vec![0.0; w * h];
-    
-    // Initialize first row
+    -1.0 * get_px(x as isize - 1, y as isize - 1)
+    - 2.0 * get_px(x as isize, y as isize - 1)
+    - 1.0 * get_px(x as isize + 1, y as isize - 1)
+    + 0.0 * get_px(x as isize - 1, y as isize)
+    + 0.0 * get_px(x as isize, y as isize)
+    + 0.0 * get_px(x as isize + 1, y as isize)
+    + 1.0 * get_px(x as isize - 1, y as isize + 1)
+    + 2.0 * get_px(x as isize, y as isize + 1)
+    + 1.0 * get_px(x as isize + 1, y as isize + 1)
+}
+
+fn find_vertical_seam_optimized(energy: &[f32], w: usize, h: usize) -> Vec<usize> {
+    let mut dp = vec![0.0; w];
+    let mut pointers = vec![0; w * h];
+
     for x in 0..w {
         dp[x] = energy[x];
     }
 
     for y in 1..h {
-        let prev_row_offset = (y - 1) * w;
-        let curr_row_offset = y * w;
+        let row_offset = y * w;
+        let mut next_dp = vec![0.0; w];
+        
         for x in 0..w {
-            let left = if x > 0 { dp[prev_row_offset + x - 1] } else { f32::MAX };
-            let mid = dp[prev_row_offset + x];
-            let right = if x < w - 1 { dp[prev_row_offset + x + 1] } else { f32::MAX };
+            let left = if x > 0 { dp[x - 1] } else { f32::MAX };
+            let mid = dp[x];
+            let right = if x < w - 1 { dp[x + 1] } else { f32::MAX };
             
-            dp[curr_row_offset + x] = energy[curr_row_offset + x] + left.min(mid).min(right);
+            let min_prev = left.min(mid).min(right);
+            next_dp[x] = energy[row_offset + x] + min_prev;
+            
+            pointers[row_offset + x] = if min_prev == left { x - 1 }
+                                  else if min_prev == mid { x }
+                                  else { x + 1 };
         }
+        dp = next_dp;
     }
 
     let mut seam = vec![0; h];
     let mut min_x = 0;
-    let last_row_offset = (h - 1) * w;
-    let mut min_val = dp[last_row_offset];
+    let mut min_val = dp[0];
     for x in 1..w {
-        if dp[last_row_offset + x] < min_val {
-            min_val = dp[last_row_offset + x];
+        if dp[x] < min_val {
+            min_val = dp[x];
             min_x = x;
         }
     }
 
-    seam[h-1] = min_x;
-    for y in (0..h-1).rev() {
-        let x = seam[y+1];
-        let row_offset = y * w;
-        let mut best_x = x;
-        let mut current_min = dp[row_offset + x];
-
-        if x > 0 && dp[row_offset + x - 1] < current_min {
-            current_min = dp[row_offset + x - 1];
-            best_x = x - 1;
-        }
-        if x < w - 1 && dp[row_offset + x + 1] < current_min {
-            best_x = x + 1;
-        }
-        seam[y] = best_x;
+    seam[h - 1] = min_x;
+    for y in (0..h - 1).rev() {
+        seam[y] = pointers[y * w + seam[y + 1]];
     }
-
     seam
 }
 
-fn update_energy_after_vertical_seam(energy: &mut Vec<f32>, gray: &GrayImage, seam: &[usize], width: &mut u32) {
-    let h = gray.height() as usize;
-    let w_val = *width as usize;
-    
-    let mut new_energy = Vec::with_capacity((w_val - 1) * h);
+fn remove_seam_in_place(data: &mut Vec<u8>, seam: &[usize], w: usize, h: usize, channels: usize) {
+    let mut new_data = Vec::with_capacity((w - 1) * h * channels);
     for y in 0..h {
         let sx = seam[y];
-        let row_start = y * w_val;
-        let row_end = row_start + w_val;
-        let row = &energy[row_start..row_end];
-        for x in 0..w_val {
-            if x != sx {
-                new_energy.push(row[x]);
-            }
-        }
-    }
-    *energy = new_energy;
-    *width -= 1;
-
-    let current_w = (*width) as usize;
-    for y in 0..h {
-        let sx = seam[y];
-        let y_u32 = y as u32;
-
-        if sx > 0 {
-            let x_idx = sx - 1;
-            energy[y * current_w + x_idx] = calculate_pixel_energy(gray, x_idx as u32, y_u32);
-        }
-        if sx < current_w {
-            let x_idx = sx;
-            energy[y * current_w + x_idx] = calculate_pixel_energy(gray, x_idx as u32, y_u32);
-        }
-    }
-}
-
-fn calculate_energy_floats_horizontal(img: &RgbImage, gray: &GrayImage) -> Vec<f32> {
-    let (width, height) = img.dimensions();
-    let mut energy = vec![0.0; (width * height) as usize];
-    for y in 0..height {
-        for x in 0..width {
-            energy[(y * width + x) as usize] = calculate_pixel_energy(gray, x, y);
-        }
-    }
-    energy
-}
-
-fn find_horizontal_seam_with_energy(energy: &[f32], width: u32, height: u32) -> Vec<usize> {
-    if height == 0 { return vec![]; }
-    let w = width as usize;
-    let h = height as usize;
-
-    let mut dp = vec![0.0; w * h];
-    
-    for y in 0..h {
-        dp[y] = energy[y * w];
-    }
-
-    for x in 1..w {
-        let prev_col_offset = (x - 1) * h;
-        let curr_col_offset = x * h;
-        for y in 0..h {
-            let top = if y > 0 { dp[prev_col_offset + y - 1] } else { f32::MAX };
-            let mid = dp[prev_col_offset + y];
-            let bot = if y < h - 1 { dp[prev_col_offset + y + 1] } else { f32::MAX };
-            
-            dp[curr_col_offset + y] = energy[y * w + x] + top.min(mid).min(bot);
-        }
-    }
-
-    let mut seam = vec![0; w];
-    let mut min_y = 0;
-    let last_col_offset = (w - 1) * h;
-    let mut min_val = dp[last_col_offset];
-    for y in 1..h {
-        if dp[last_col_offset + y] < min_val {
-            min_val = dp[last_col_offset + y];
-            min_y = y;
-        }
-    }
-
-    seam[w-1] = min_y;
-    for x in (0..w-1).rev() {
-        let y = seam[x+1];
-        let col_offset = x * h;
-        let mut best_y = y;
-        let mut current_min = dp[col_offset + y];
-
-        if y > 0 && dp[col_offset + y - 1] < current_min {
-            current_min = dp[col_offset + y - 1];
-            best_y = y - 1;
-        }
-        if y < h - 1 && dp[col_offset + y + 1] < current_min {
-            best_y = y + 1;
-        }
-        seam[x] = best_y;
-    }
-
-    seam
-}
-
-fn update_energy_after_horizontal_seam(energy: &mut Vec<f32>, gray: &GrayImage, seam: &[usize], height: &mut u32) {
-    let w = gray.width() as usize;
-    let h_val = *height as usize;
-    
-    let mut new_energy = Vec::with_capacity(w * (h_val - 1));
-    for y in 0..h_val {
+        let row_start = y * w * channels;
         for x in 0..w {
-            if y != seam[x] {
-                new_energy.push(energy[y * w + x]);
+            if x == sx {
+                continue;
+            }
+            let src = row_start + x * channels;
+            for c in 0..channels {
+                new_data.push(data[src + c]);
             }
         }
     }
-    *energy = new_energy;
-    *height -= 1;
+    *data = new_data;
+}
 
-    let current_h = (*height) as usize;
-    for x in 0..w {
-        let sy = seam[x];
-        let x_u32 = x as u32;
-
-        if sy > 0 {
-            let y_idx = if sy - 1 < current_h { sy - 1 } else { current_h - 1 };
-            energy[y_idx * w + x] = calculate_pixel_energy(gray, x_u32, y_idx as u32);
+fn update_energy_after_seam(energy: &mut Vec<f32>, gray: &[u8], seam: &[usize], w: usize, h: usize) {
+    // The input 'w' is the width AFTER the seam has been removed from the RGB/Gray buffers, 
+    // but the energy vector currently has (w + 1) elements per row.
+    
+    // 1. Remove the seam values from the energy vector.
+    // Instead of allocating a new Vec every time, we shift elements in-place.
+    for y in 0..h {
+        let sx = seam[y];
+        let row_start = y * (w + 1);
+        
+        // Shift elements to the left to overwrite the seam pixel
+        for x in sx..w {
+            energy[row_start + x] = energy[row_start + x + 1];
         }
-        if sy < h_val {
-            let y_idx = if sy < current_h { sy } else { current_h - 1 };
-            energy[y_idx * w + x] = calculate_pixel_energy(gray, x_u32, y_idx as u32);
+    }
+    energy.truncate(w * h);
+
+    // 2. Recalculate energy ONLY for the pixels that were actually affected by the seam removal.
+    for y in 0..h {
+        let sx = seam[y];
+        let new_x = if sx < w { sx } else { sx - 1 };
+        
+        for dx in -1..=1 {
+            let nx = (new_x as isize + dx).clamp(0, (w - 1) as isize) as usize;
+            energy[y * w + nx] = get_sobel_energy_at(gray, nx, y, w, h);
         }
     }
 }
 
-fn remove_horizontal_seam_gray(img: &GrayImage, seam: &[usize]) -> GrayImage {
-    let (width, height) = img.dimensions();
-    let mut new_img = GrayImage::new(width, height - 1);
-
-    for x in 0..width {
-        let seam_y = seam[x as usize];
-        let mut current_y = 0;
-        for y in 0..height {
-            if y as usize == seam_y {
-                continue;
-            }
-            new_img.put_pixel(x, current_y, *img.get_pixel(x, y));
-            current_y += 1;
-        }
-    }
-    new_img
-}
-
-fn remove_horizontal_seam(img: &RgbImage, seam: &[usize]) -> RgbImage {
-    let (width, height) = img.dimensions();
-    let mut new_img = RgbImage::new(width, height - 1);
-
-    for x in 0..width {
-        let seam_y = seam[x as usize];
-        let mut current_y = 0;
-        for y in 0..height {
-            if y as usize == seam_y {
-                continue;
-            }
-            new_img.put_pixel(x, current_y, *img.get_pixel(x, y));
-            current_y += 1;
-        }
-    }
-    new_img
-}
-
-fn remove_vertical_seam_gray(img: &GrayImage, seam: &[usize]) -> GrayImage {
-    let (width, height) = img.dimensions();
-    let mut new_img = GrayImage::new(width - 1, height);
-
-    for y in 0..height {
-        let seam_x = seam[y as usize];
-        let mut current_x = 0;
-        for x in 0..width {
-            if x as usize == seam_x {
-                continue;
-            }
-            new_img.put_pixel(current_x, y, *img.get_pixel(x, y));
-            current_x += 1;
-        }
-    }
-    new_img
-}
-
-fn remove_vertical_seam(img: &RgbImage, seam: &[usize]) -> RgbImage {
-    let (width, height) = img.dimensions();
-    let mut new_img = RgbImage::new(width - 1, height);
-
-    for y in 0..height {
-        let seam_x = seam[y as usize];
-        let mut current_x = 0;
-        for x in 0..width {
-            if x as usize == seam_x {
-                continue;
-            }
-            new_img.put_pixel(current_x, y, *img.get_pixel(x, y));
-            current_x += 1;
-        }
-    }
-    new_img
+fn get_sobel_energy_at(gray: &[u8], x: usize, y: usize, w: usize, h: usize) -> f32 {
+    let gx = get_sobel_x(gray, x, y, w, h);
+    let gy = get_sobel_y(gray, x, y, w, h);
+    (gx * gx + gy * gy).sqrt()
 }
 
 #[cfg(test)]
@@ -399,7 +232,7 @@ mod tests {
         let target_height = 50;
         resize_height(&mut img, target_height).unwrap();
         assert_eq!(img.width(), 100);
-        assert_eq!(img.height(), target_height);
+        assert_eq!(img.height(), 50);
     }
 
     #[test]
@@ -434,7 +267,6 @@ mod tests {
 
     #[test]
     fn test_resize_empty_image() {
-        // image crate usually doesn't allow 0 dimensions, but we test 1x1
         let mut img = create_test_image(1, 1);
         let res = resize_width(&mut img, 1);
         assert!(res.is_ok());

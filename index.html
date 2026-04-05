@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wasm Seam Carving</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; background: #f0f0f0; }
+        .container { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; flex-direction: column; gap: 20px; }
+        canvas { max-width: 100%; height: auto; border: 1px solid #ccc; }
+        .controls { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center; }
+        .canvas-wrapper { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+    </style>
+</head>
+<body>
+    <h1>Seam Carving (Wasm)</h1>
+    <div class="container">
+        <div class="controls">
+            <label>Upload Image:</label>
+            <input type="file" id="upload" accept="image/*">
+            
+            <label>Target Width:</label>
+            <input type="number" id="targetWidth" value="100">
+            
+            <label>Target Height:</label>
+            <input type="number" id="targetHeight" value="100">
+            
+            <button id="resizeBtn">Resize Image</button>
+            <div id="progressContainer" style="display:none; width: 100%; margin-top: 10px;">
+                <progress id="progressBar" value="0" max="1" style="width: 100%;"></progress>
+                <span id="progressText">0%</span>
+            </div>
+        </div>
+
+        <div class="canvas-wrapper">
+            <div>
+                <h3>Original</h3>
+                <canvas id="originalCanvas"></canvas>
+            </div>
+            <div>
+                <h3>Resized</h3>
+                <canvas id="resizedCanvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        async function run() {
+            const upload = document.getElementById('upload');
+            const targetWidthInput = document.getElementById('targetWidth');
+            const targetHeightInput = document.getElementById('targetHeight');
+            const resizeBtn = document.getElementById('resizeBtn');
+            
+            const originalCanvas = document.getElementById('originalCanvas');
+            const resizedCanvas = document.getElementById('resizedCanvas');
+            const ctxOrig = originalCanvas.getContext('2d');
+            const ctxResized = resizedCanvas.getContext('2d');
+
+            let originalImgData = null;
+            let originalWidth = 0;
+            let originalHeight = 0;
+
+            upload.onchange = (e) => {
+                const file = e.target.files[0];
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        originalWidth = img.width;
+                        originalHeight = img.height;
+                        originalCanvas.width = img.width;
+                        originalCanvas.height = img.height;
+                        ctxOrig.drawImage(img, 0, 0);
+                        originalImgData = ctxOrig.getImageData(0, 0, img.width, img.height).data;
+                        
+                        targetWidthInput.value = img.width;
+                        targetHeightInput.value = img.height;
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            };
+
+            resizeBtn.onclick = async () => {
+                if (!originalImgData) return alert("Please upload an image first");
+
+                const tw = parseInt(targetWidthInput.value);
+                const th = parseInt(targetHeightInput.value);
+
+                const progressContainer = document.getElementById('progressContainer');
+                const progressBar = document.getElementById('progressBar');
+                const progressText = document.getElementById('progressText');
+
+                try {
+                    progressContainer.style.display = 'block';
+                    resizeBtn.disabled = true;
+
+                    const worker = new Worker('worker.js', { type: 'module' });
+                    console.log("Worker created");
+
+                    const handleWorkerResponse = (resolve, reject) => {
+                        return (e) => {
+                            console.log("Main thread received message:", e.data);
+                            const { type, progress, data, error } = e.data;
+                            if (type === 'progress') {
+                                progressBar.value = progress;
+                                progressText.innerText = Math.round(progress * 100) + '%';
+                            } else if (type === 'done') {
+                                resolve(data);
+                            } else if (type === 'error') {
+                                console.error("Worker Error:", error);
+                                reject(error);
+                            }
+                        };
+                    };
+
+                    // IMPORTANT: Convert RGBA (Canvas) to RGB (Wasm expectation)
+                    const rgba = originalImgData;
+                    const rgb = new Uint8Array(originalWidth * originalHeight * 3);
+                    for (let i = 0; i < originalWidth * originalHeight; i++) {
+                        rgb[i * 3] = rgba[i * 4];     // R
+                        rgb[i * 3 + 1] = rgba[i * 4 + 1]; // G
+                        rgb[i * 3 + 2] = rgba[i * 4 + 2]; // B
+                    }
+
+                    let currentData = rgb;
+                    let currentW = originalWidth;
+                    let currentH = originalHeight;
+
+                    if (tw < currentW) {
+                        const resultPromise = new Promise((resolve, reject) => {
+                            worker.onmessage = handleWorkerResponse(resolve, reject);
+                        });
+                        worker.postMessage({ 
+                            type: 'resize_width', 
+                            data: currentData, 
+                            width: currentW, 
+                            height: currentH, 
+                            target: tw 
+                        });
+                        currentData = await resultPromise;
+                        currentW = tw;
+                    }
+
+                    if (th < currentH) {
+                        const resultPromise2 = new Promise((resolve, reject) => {
+                            worker.onmessage = handleWorkerResponse(resolve, reject);
+                        });
+                        worker.postMessage({ 
+                            type: 'resize_height', 
+                            data: currentData, 
+                            width: currentW, 
+                            height: currentH, 
+                            target: th 
+                        });
+                        currentData = await resultPromise2;
+                        currentH = th;
+                    }
+
+                    if (tw >= currentW && th >= currentH) {
+                        currentData = rgb;
+                    }
+
+                    // Convert RGB back to RGBA for Canvas
+                    console.log(`Final buffer size: ${currentData.length}, Expected: ${currentW * currentH * 3}`);
+                    const finalData = new Uint8ClampedArray(currentW * currentH * 4);
+                    
+                    // Calculate the actual stride if there is excess capacity
+                    // We assume the image is correct but padded at the end of each row,
+                    // OR the buffer is just larger than expected.
+                    // If the buffer is exactly currentW * currentH * 3, we use standard indexing.
+                    // If it's larger, we have to decide if it's row-padding or just trailing garbage.
+                    
+                    const expectedSize = currentW * currentH * 3;
+                    const actualSize = currentData.length;
+                    
+                    for (let i = 0; i < currentW * currentH; i++) {
+                        const x = i % currentW;
+                        const y = Math.floor(i / currentW);
+                        
+                        // If actualSize > expectedSize, check if the gap is per-row (stride)
+                        // or just at the end. 
+                        // Most Wasm/Rust Vecs don't add per-row padding unless specifically requested.
+                        // However, let's check if the total size is a multiple of height.
+                        let rgbIdx;
+                        if (actualSize > expectedSize && actualSize % currentH === 0) {
+                            const stride = actualSize / currentH;
+                            rgbIdx = y * stride + x * 3;
+                        } else {
+                            rgbIdx = i * 3;
+                        }
+
+                        const rgbaIdx = i * 4;
+                        if (rgbIdx + 2 < actualSize) {
+                            finalData[rgbaIdx]     = currentData[rgbIdx];     // R
+                            finalData[rgbaIdx + 1] = currentData[rgbIdx + 1]; // G
+                            finalData[rgbaIdx + 2] = currentData[rgbIdx + 2]; // B
+                            finalData[rgbaIdx + 3] = 255;                  // A
+                        }
+                    }
+
+                    resizedCanvas.width = currentW;
+                    resizedCanvas.height = currentH;
+                    const imageData = new ImageData(finalData, currentW, currentH);
+                    ctxResized.putImageData(imageData, 0, 0);
+                    
+                    worker.terminate();
+                    progressContainer.style.display = 'none';
+                    resizeBtn.disabled = false;
+                } catch (err) {
+                    alert("Error: " + err);
+                    progressContainer.style.display = 'none';
+                    resizeBtn.disabled = false;
+                }
+            };
+        }
+
+        run();
+    </script>
+</body>
+</html>

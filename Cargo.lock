@@ -1099,6 +1099,9 @@ dependencies = [
  "clap",
  "criterion",
  "image",
+ "js-sys",
+ "rayon",
+ "wasm-bindgen",
 ]
 
 [[package]]
