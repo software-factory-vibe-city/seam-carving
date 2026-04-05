@@ -1,0 +1,15 @@
+{
+  "name": "seam-stitching",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "seam_stitching_bg.wasm",
+    "seam_stitching.js",
+    "seam_stitching.d.ts"
+  ],
+  "main": "seam_stitching.js",
+  "types": "seam_stitching.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
