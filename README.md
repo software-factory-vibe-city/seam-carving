@@ -3,7 +3,7 @@
 Seam Stitching is a Rust implementation of the **Seam Carving** algorithm, used for content-aware image resizing. Unlike standard scaling, seam carving removes pixels along paths (seams) of low energy (low visual importance), allowing the image to be resized while preserving important features.
 
 ## 🤖 AI Attribution
-This repository was developed completely with **Gemma 4** (specifically the [Intel/gemma-4-31B-it-int4-AutoRound](https://huggingface.co/Intel/gemma-4-31B-it-int4-AutoRound) model).
+This repository was developed completely with **Gemma 4** (specifically the [Intel/gemma-4-31B-it-int4-AutoRound](https://huggingface.co/Intel/gemma-4-31B-it-int4-AutoRound) model) running on an **RTX 5090**.
 
 ## Features
 
