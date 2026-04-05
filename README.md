@@ -35,12 +35,12 @@ The following examples demonstrate the effectiveness of the hybrid energy model 
 
 ### Balloons
 **Goal**: Remove background while preserving circular shapes.
-- **Input**: <img src="images/in/baloons.png" width="300"> $\rightarrow$ **Outputs**: <img src="images/out/baloons-w-75.jpg" width="300"> (750px), <img src="images/out/baloons-w-50.jpg" width="300"> (500px)
+- **Input**: <img src="images/in/baloons.png" height="200"> $\rightarrow$ **Outputs**: <img src="images/out/baloons-w-75.jpg" height="200"> (750px), <img src="images/out/baloons-w-50.jpg" height="200"> (500px)
 - **Effect**: The algorithm intelligently identifies the flat blue areas as low-energy and removes them, while the structural energy of the balloons prevents distortion or "squishing" across different reduction levels.
 
 ### Cityscape
 **Goal**: Reduce width while maintaining vertical architectural lines.
-- **Input**: <img src="images/in/city.jpg" width="300"> $\rightarrow$ **Output**: <img src="images/out/city-w-50.jpg" width="300">
+- **Input**: <img src="images/in/city.jpg" height="200"> $\rightarrow$ **Output**: <img src="images/out/city-w-50.jpg" height="200">
 - **Effect**: Vertical edges of buildings are preserved as high-energy regions, ensuring the city's perspective remains intact while the width is reduced by removing gaps between structures.
 
 ### Comparison Summary
@@ -54,7 +54,7 @@ The following examples demonstrate the effectiveness of the hybrid energy model 
 
 Seam carving is highly effective when low-energy "empty" space exists. However, in images where every pixel is part of a significant structural edge (high energy across the entire image), the algorithm is forced to remove higher-energy seams.
 
-- **Extreme Reduction**: <img src="images/out/city-w-50-h-20.jpg" width="300">
+- **Extreme Reduction**: <img src="images/out/city-w-50-h-20.jpg" height="200">
   - **Result**: When the reduction target is too aggressive and no true low-energy seams remain, the algorithm begins removing essential structural pixels, leading to visible "squishing" and distortion.
 
 ### Arguments
