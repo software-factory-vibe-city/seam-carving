@@ -1,4 +1,4 @@
-import init, { resize_width_wasm, resize_height_wasm } from './pkg/seam_stitching.js';
+import init, { resize_width_wasm, resize_height_wasm } from './seam_stitching.js';
 
 let wasmInitialized = false;
 
